@@ -125,6 +125,7 @@ class FusedSeqpoolCVMWithPCOCOpMaker : public framework::OpProtoAndCheckerMaker 
     AddAttr<int>("cvm_offset", "(int, default 7)").SetDefault(7);
     AddAttr<int>("max_cvm_offset", "(int, default 7)").SetDefault(7);
     AddAttr<int>("quant_ratio", "(int, default 128)").SetDefault(0);
+    AddAttr<int>("show2_threshold", "(int, default 0)").SetDefault(0);
 
     AddComment(R"DOC(
 Fuse multiple pairs of Sequence Pool and CVMWithPCOC Operator.
