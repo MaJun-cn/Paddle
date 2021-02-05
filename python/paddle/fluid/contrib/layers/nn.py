@@ -1654,7 +1654,7 @@ def fused_seqpool_cvm_with_pcoc(input,
             "show_coeff": show_coeff,
             "clk_coeff": clk_coeff,
             "threshold": threshold,
-            "quant_ratio": quant_ratio
+            "quant_ratio": quant_ratio,
             "show2_threshold": show2_threshold
         })
 
