@@ -86,7 +86,8 @@ __global__ void FusedSeqpoolWithPCOCKernelQuantFilter(
     const size_t N, T **input_values, T **seqpool_output_values,
     size_t **lods_values, const int batch_size, const int embedding_size,
     const float pad_value, const int max_cvm_offset, const float show_coeff,
-    const float clk_coeff, const float threshold, const int quant_ratio) {
+    const float clk_coeff, const float threshold, const int quant_ratio,
+    const int show2_threshold) {
   CUDA_KERNEL_LOOP(i, N) {
     int key = i / embedding_size;
     int offset = i % embedding_size;  // embedx id
@@ -99,11 +100,17 @@ __global__ void FusedSeqpoolWithPCOCKernelQuantFilter(
     for (auto k = start; k < end; ++k) {
       T &show = *(input_values[x] + k * embedding_size);
       T &click = *(input_values[x] + k * embedding_size + 1);
+      T &show2 = *(input_values[x] + k * embedding_size + 2);
+
       if ((show - click) * show_coeff + click * clk_coeff < threshold) {
         continue;
       }
-      if (offset < max_cvm_offset) {  // show & click
+      if (offset < 2) { // show & click
         val += *(input_values[x] + k * embedding_size + offset);
+      } else if (offset >= 2 && offset < max_cvm_offset) { //show2 & clk2 & pclk & pclk2 & pclk3...
+        if (show2 > show2_threshold) {
+          val += *(input_values[x] + k * embedding_size + offset);
+        }
       } else {
         val += ((static_cast<int>(
                     *(input_values[x] + k * embedding_size + offset) *
@@ -123,7 +130,8 @@ __global__ void FusedCVMWithPCOCKernelWithCVM(const size_t output_N, T **output_
                                               const int input_embedding_size,
                                               const int ouput_embedding_size,
                                               const int pclk_num,
-                                              const int embed_index_diff) {
+                                              const int embed_index_diff,
+                                              const bool use_infer_cvm) {
   CUDA_KERNEL_LOOP(i, output_N) {
     int key = i / ouput_embedding_size;
     int offset = i % ouput_embedding_size;
@@ -136,14 +144,27 @@ __global__ void FusedCVMWithPCOCKernelWithCVM(const size_t output_N, T **output_
       *(output_values[x] + y * ouput_embedding_size + offset) =
           log(*(seqpool_output_values[x] + y * input_embedding_size + 1) + 1) -
           log(*(seqpool_output_values[x] + y * input_embedding_size) + 1);
-    } else if (offset < 2 + pclk_num) { // 2:(4-2)/3:(5-2)/4:(6-2)
-      *(output_values[x] + y * ouput_embedding_size + offset) =
-          log(*(seqpool_output_values[x] + y * input_embedding_size + (offset + 2)) + 1) -
-          log(*(seqpool_output_values[x] + y * input_embedding_size + 2) + 1);
-    } else if (offset < 2 + 2 * pclk_num) { // 5:(4-3)/6:(5-3)/7:(6-3)
-      *(output_values[x] + y * ouput_embedding_size + offset) =
-          log(*(seqpool_output_values[x] + y * input_embedding_size + (offset + 2 - pclk_num)) + 1) -
-          log(*(seqpool_output_values[x] + y * input_embedding_size + 3) + 1);
+    } else if (offset < 2 + pclk_num) { // 2:(4-2)/3:(5-2)/4:(6-2) pctr
+      if (use_infer_cvm) {
+        *(output_values[x] + y * ouput_embedding_size + offset) =
+            log(*(seqpool_output_values[x] + y * input_embedding_size + (offset + 2)) + 1) -
+            log(*(seqpool_output_values[x] + y * input_embedding_size) + 1);
+      } else {
+        *(output_values[x] + y * ouput_embedding_size + offset) =
+            log(*(seqpool_output_values[x] + y * input_embedding_size + (offset + 2)) + 1) -
+            log(*(seqpool_output_values[x] + y * input_embedding_size + 2) + 1);
+      }
+    } else if (offset < 2 + 2 * pclk_num) { // 5:(4-3)/6:(5-3)/7:(6-3) pcoc
+      if (use_infer_cvm) {
+        *(output_values[x] + y * ouput_embedding_size + offset) =
+            log(*(seqpool_output_values[x] + y * input_embedding_size + (offset + 2 - pclk_num)) + 1) -
+            log(*(seqpool_output_values[x] + y * input_embedding_size + 1) + 1);
+
+      } else {
+        *(output_values[x] + y * ouput_embedding_size + offset) =
+            log(*(seqpool_output_values[x] + y * input_embedding_size + (offset + 2 - pclk_num)) + 1) -
+            log(*(seqpool_output_values[x] + y * input_embedding_size + 3) + 1);
+      }
     } else {
       *(output_values[x] + y * ouput_embedding_size + offset) =
           *(seqpool_output_values[x] + y * input_embedding_size + offset + embed_index_diff);
@@ -179,8 +200,9 @@ void FusedSeqpoolCVMWithPCOC(const paddle::platform::Place &place,
                              const int slot_num, const int embedding_size,
                              const float padding_value, const bool use_cvm,
                              const int used_cvm_offset, const int max_cvm_offset,
-                             float need_filter, float show_coeff, float clk_coeff,
-                             float threshold, const int quant_ratio) {
+                             bool need_filter, float show_coeff, float clk_coeff,
+                             float threshold, const int quant_ratio, 
+                             const int show2_threshold, const bool use_infer_cvm) {
   auto stream = dynamic_cast<platform::CUDADeviceContext *>(
                     platform::DeviceContextPool::Instance().Get(
                         BOOST_GET_CONST(platform::CUDAPlace, place)))
@@ -217,7 +239,7 @@ void FusedSeqpoolCVMWithPCOC(const paddle::platform::Place &place,
                                             stream>>>(
         N, gpu_input_values, gpu_seqpool_output_values, lods_values, batch_size,
         embedding_size, padding_value, max_cvm_offset, show_coeff, clk_coeff,
-        threshold, quant_ratio);
+        threshold, quant_ratio, show2_threshold);
   } else if (quant_ratio > 0) {  // quant not filter
     FusedSeqpoolWithPCOCKernelQuant<<<GET_BLOCK(N), PADDLE_CUDA_NUM_THREADS, 0,
                                       stream>>>(
@@ -238,7 +260,7 @@ void FusedSeqpoolCVMWithPCOC(const paddle::platform::Place &place,
   if (use_cvm) {
     FusedCVMWithPCOCKernelWithCVM<<<GET_BLOCK(output_N), PADDLE_CUDA_NUM_THREADS, 0, stream>>>(
         output_N, gpu_output_values, gpu_seqpool_output_values, batch_size,
-        embedding_size, ouput_embedding_size, pclk_num, embed_index_diff);
+        embedding_size, ouput_embedding_size, pclk_num, embed_index_diff, use_infer_cvm);
   } else {
     // not need cvm input
     output_N = static_cast<size_t>(batch_size * slot_num *
@@ -394,6 +416,8 @@ class FusedSeqpoolCVMWithPCOCCUDAKernel : public framework::OpKernel<T> {
     const int used_cvm_offset = ctx.Attr<int>("cvm_offset");
     const int max_cvm_offset = ctx.Attr<int>("max_cvm_offset");
     const int quant_ratio = ctx.Attr<int>("quant_ratio");
+    const int show2_threshold = ctx.Attr<int>("show2_threshold");
+    bool use_infer_cvm = ctx.Attr<bool>("use_infer_cvm");
     int embed_index_diff = max_cvm_offset - 2 * used_cvm_offset + 6;
 
     int embedding_size = inputs[0]->numel() / inputs[0]->dims()[0];
@@ -432,7 +456,7 @@ class FusedSeqpoolCVMWithPCOCCUDAKernel : public framework::OpKernel<T> {
                     seqpool_output_data, lods_data, batch_size, slot_size,
                     embedding_size, padding_value, use_cvm, used_cvm_offset,
                     max_cvm_offset, need_filter, show_coeff, clk_coeff,
-                    threshold, quant_ratio);
+                    threshold, quant_ratio, show2_threshold, use_infer_cvm);
 
   }
 };
