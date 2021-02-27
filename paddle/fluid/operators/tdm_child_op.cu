@@ -14,28 +14,41 @@
 
 #pragma once
 
-#include <gflags/gflags.h>
-#include <cmath>
-#include <fstream>
-#include <set>
-#include <string>
-#include <utility>
+#include <cuda.h>
 #include <vector>
-#include "paddle/fluid/framework/mixed_vector.h"
-#include "paddle/fluid/framework/op_registry.h"
+#include "paddle/fluid/operators/tdm_child_op.h"
 
 namespace paddle {
 namespace operators {
 
-using Tensor = framework::Tensor;
-using LoDTensor = framework::LoDTensor;
-using DDim = framework::DDim;
-using LoD = framework::LoD;
+template <typename T, typename InfoT = int, typename OutT = int>
+__global__ void Kernel_TDMChildInner(const size_t N, const T *input_data,
+                                     const InfoT *tree_info_data,
+                                     const int child_nums, const int length,
+                                     OutT *child_data, OutT *leaf_mask_data) {
+  int idx = blockDim.x * blockIdx.x + threadIdx.x;
+  for (; idx < N; idx += blockDim.x * gridDim.x) {
+    const int input_ids = idx / child_nums;
+    const int child_ids = idx % child_nums;
+
+    int start_tree_id = static_cast<int>(input_data[input_ids]) * length + 3;
+    if ((input_data[input_ids] == 0 || tree_info_data[start_tree_id] == 0)) {
+      child_data[idx] = 0;
+      leaf_mask_data[idx] = 0;
+    } else {
+      OutT child_id =
+          static_cast<OutT>(tree_info_data[start_tree_id + child_ids]);
+      child_data[idx] = child_id;
+      leaf_mask_data[idx] = static_cast<OutT>(
+          tree_info_data[static_cast<int>(child_id) * length] == 0 ? 0 : 1);
+    }
+  }
+}
 
 template <typename T, typename InfoT = int, typename OutT = int>
-void TDMChildInner(const framework::ExecutionContext &context,
-                   const LoDTensor &input, const LoDTensor &tree_info,
-                   LoDTensor *child, LoDTensor *mask) {
+void TDMChildInnerCUDA(const framework::ExecutionContext &context,
+                       const LoDTensor &input, const LoDTensor &tree_info,
+                       LoDTensor *child, LoDTensor *mask) {
   auto child_nums = context.Attr<int>("child_nums");
   auto info_dims = tree_info.dims();
   int node_nums = info_dims[0];
@@ -44,70 +57,23 @@ void TDMChildInner(const framework::ExecutionContext &context,
   int input_ids_num = input.numel();
   VLOG(4) << "TDM child op: input numel ->  " << input_ids_num;
 
-  //  std::vector<OutT> child_vec{};
-  //  std::vector<OutT> item_mask_vec{};
-
   auto *input_data = input.data<T>();
   auto *tree_info_data = tree_info.data<InfoT>();
 
   auto *child_data = child->mutable_data<OutT>(context.GetPlace());
   auto *leaf_mask_data = mask->mutable_data<OutT>(context.GetPlace());
 
-  // TreeInfo: node_id : item_id; layer_id; ancestor_id; child_id
-  for (int input_ids = 0; input_ids < input_ids_num; ++input_ids) {
-    PADDLE_ENFORCE_LT(
-        input_data[input_ids], node_nums,
-        platform::errors::InvalidArgument(
-            "input id of OP(fluid.contrib.layers.tdm_child) "
-            "expected >= 0 and < %ld, but got %ld. Please check input "
-            "value.",
-            node_nums, input_data[input_ids]));
-    PADDLE_ENFORCE_LE(
-        0, input_data[input_ids],
-        platform::errors::InvalidArgument(
-            "input id of OP(fluid.contrib.layers.tdm_child) "
-            "expected >= 0 and < %ld, but got %ld. Please check input "
-            "value.",
-            node_nums, input_data[input_ids]));
+  auto stream = context.cuda_device_context().stream();
 
-    bool has_child =
-        (input_data[input_ids] == 0 ||
-         tree_info_data[static_cast<int>(input_data[input_ids]) * length + 3] ==
-             0)
-            ? false
-            : true;
-
-    int offset = input_ids * child_nums;
-    if (has_child) {
-      for (int child_ids = 0; child_ids < child_nums; ++child_ids) {
-        OutT child_id = static_cast<OutT>(
-            tree_info_data[static_cast<int>(input_data[input_ids]) * length +
-                           3 + child_ids]);
-        child_data[offset] = child_id;
-        OutT child_is_item = static_cast<OutT>(
-            tree_info_data[static_cast<int>(child_id) * length] == 0 ? 0 : 1);
-        leaf_mask_data[offset] = child_is_item;
-        offset = offset + 1;
-      }
-    } else {
-      for (int child_ids = 0; child_ids < child_nums; ++child_ids) {
-        child_data[offset] = 0;
-        leaf_mask_data[offset] = 0;
-        offset = offset + 1;
-      }
-    }
-  }
-
-  //  int output_nums = child_vec.size();
-  //  auto *child_data = child->mutable_data<OutT>(context.GetPlace());
-  //  auto *leaf_mask_data = mask->mutable_data<OutT>(context.GetPlace());
-  //
-  //  memcpy(child_data, &child_vec[0], sizeof(OutT) * output_nums);
-  //  memcpy(leaf_mask_data, &item_mask_vec[0], sizeof(OutT) * output_nums);
+  size_t N = input_ids_num * child_nums;
+  // kernel
+  Kernel_TDMChildInner<T, InfoT, OutT><<<(N + 512 - 1) / 512, 512, 0, stream>>>(
+      N, input_data, tree_info_data, child_nums, length, child_data,
+      leaf_mask_data);
 }
 
 template <typename DeviceContext, typename T>
-class TDMChildKernel : public framework::OpKernel<T> {
+class TDMChildCUDAKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext &ctx) const override {
     auto *input_var = ctx.InputVar("X");
@@ -164,22 +130,34 @@ class TDMChildKernel : public framework::OpKernel<T> {
 
     if (info_type == framework::proto::VarType::INT32 &&
         output_type == framework::proto::VarType::INT32) {
-      TDMChildInner<T, int, int>(ctx, input_tensor, tree_info_tensor,
-                                 child_tensor, leaf_mask_tensor);
+      TDMChildInnerCUDA<T, int, int>(ctx, input_tensor, tree_info_tensor,
+                                     child_tensor, leaf_mask_tensor);
     } else if (info_type == framework::proto::VarType::INT64 &&
                output_type == framework::proto::VarType::INT32) {
-      TDMChildInner<T, int64_t, int>(ctx, input_tensor, tree_info_tensor,
-                                     child_tensor, leaf_mask_tensor);
+      TDMChildInnerCUDA<T, int64_t, int>(ctx, input_tensor, tree_info_tensor,
+                                         child_tensor, leaf_mask_tensor);
     } else if (info_type == framework::proto::VarType::INT32 &&
                output_type == framework::proto::VarType::INT64) {
-      TDMChildInner<T, int, int64_t>(ctx, input_tensor, tree_info_tensor,
-                                     child_tensor, leaf_mask_tensor);
+      TDMChildInnerCUDA<T, int, int64_t>(ctx, input_tensor, tree_info_tensor,
+                                         child_tensor, leaf_mask_tensor);
     } else if (info_type == framework::proto::VarType::INT64 &&
                output_type == framework::proto::VarType::INT64) {
-      TDMChildInner<T, int64_t, int64_t>(ctx, input_tensor, tree_info_tensor,
-                                         child_tensor, leaf_mask_tensor);
+      TDMChildInnerCUDA<T, int64_t, int64_t>(
+          ctx, input_tensor, tree_info_tensor, child_tensor, leaf_mask_tensor);
     }
   }
 };
+
 }  // namespace operators
 }  // namespace paddle
+
+REGISTER_OP_CUDA_KERNEL(
+    tdm_child,
+    paddle::operators::TDMChildCUDAKernel<paddle::platform::CUDADeviceContext,
+                                          float>,
+    paddle::operators::TDMChildCUDAKernel<paddle::platform::CUDADeviceContext,
+                                          double>,
+    paddle::operators::TDMChildCUDAKernel<paddle::platform::CUDADeviceContext,
+                                          int>,
+    paddle::operators::TDMChildCUDAKernel<paddle::platform::CUDADeviceContext,
+                                          int64_t>);

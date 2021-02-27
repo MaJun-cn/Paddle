@@ -32,6 +32,13 @@ struct NumericTraits<paddle::platform::float16>
 namespace paddle {
 namespace operators {
 
+// CUDA: use 512 threads per block
+const int CUDA_NUM_THREADS = 512;
+// CUDA: number of blocks for threads.
+inline int GET_BLOCKS(const int N) {
+  return (N + CUDA_NUM_THREADS - 1) / CUDA_NUM_THREADS;
+}
+
 using Tensor = framework::Tensor;
 
 struct SegmentOffsetIter {
@@ -363,6 +370,21 @@ __global__ void AssignGradWithAxis(const T* grad_out, const int64_t* indices,
     }
   }
 }
+
+//// the grad assign with the axis
+template <typename T>
+__global__ void CopySortTopK(const size_t N, const T* value,
+                             const int64_t* indices, T* out,
+                             int64_t* out_indices, const int num_cols,
+                             const int k) {
+  // raw_height is the length of topk axis
+  CUDA_KERNEL_LOOP(idx, N) {
+    int pos = (idx / k) * num_cols + (idx % k);
+    out[idx] = value[pos];
+    out_indices[idx] = indices[pos];
+  }
+}
+
 // use the radix sort for the topk
 template <typename T>
 bool SortTopk(const platform::CUDADeviceContext& ctx,
@@ -495,21 +517,27 @@ bool SortTopk(const platform::CUDADeviceContext& ctx,
       return false;
     }
   }
-  auto& dev = *ctx.eigen_device();
+  //  auto& dev = *ctx.eigen_device();
   if (k < num_cols) {
+    int N = num_rows * k;
+    CopySortTopK<<<GET_BLOCKS(N), CUDA_NUM_THREADS, 0, cu_stream>>>(
+        N, sorted_values_ptr, sorted_indices_ptr, values, indices, num_cols, k);
+    cudaStreamSynchronize(cu_stream);
     // copy sliced data to output.
-    const Eigen::DSizes<Eigen::DenseIndex, 2> slice_indices{0, 0};
-    const Eigen::DSizes<Eigen::DenseIndex, 2> slice_sizes{num_rows, k};
-    auto e_indices = EigenMatrix<int64_t>::From(*indices_tensor, dim);
-    auto e_tmp_indices = EigenMatrix<int64_t>::From(temp_indices);
-
-    std::vector<int> odims = {static_cast<int>(num_rows), static_cast<int>(k)};
-    auto dim = framework::make_ddim(odims);
-    auto e_values = EigenMatrix<T>::From(*out_tensor, dim);
-    auto e_tmp_values = EigenMatrix<T>::From(temp_values);
-
-    e_indices.device(dev) = e_tmp_indices.slice(slice_indices, slice_sizes);
-    e_values.device(dev) = e_tmp_values.slice(slice_indices, slice_sizes);
+    //    const Eigen::DSizes<Eigen::DenseIndex, 2> slice_indices{0, 0};
+    //    const Eigen::DSizes<Eigen::DenseIndex, 2> slice_sizes{num_rows, k};
+    //    auto e_indices = EigenMatrix<int64_t>::From(*indices_tensor, dim);
+    //    auto e_tmp_indices = EigenMatrix<int64_t>::From(temp_indices);
+    //
+    //    std::vector<int> odims = {static_cast<int>(num_rows),
+    //    static_cast<int>(k)};
+    //    auto dim = framework::make_ddim(odims);
+    //    auto e_values = EigenMatrix<T>::From(*out_tensor, dim);
+    //    auto e_tmp_values = EigenMatrix<T>::From(temp_values);
+    //
+    //    e_indices.device(dev) = e_tmp_indices.slice(slice_indices,
+    //    slice_sizes);
+    //    e_values.device(dev) = e_tmp_values.slice(slice_indices, slice_sizes);
   }
   return true;
 }

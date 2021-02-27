@@ -37,34 +37,75 @@ class PullBoxExtendedSparseOp : public framework::OperatorWithKernel {
     auto emb_extended_size =
         static_cast<int64_t>(ctx->Attrs().Get<int>("emb_extended_size"));
     auto all_ids_dim = ctx->GetInputsDim("Ids");
+
     const size_t n_ids = all_ids_dim.size();
     std::vector<framework::DDim> outs_dims;
     std::vector<framework::DDim> outs_extended_dims;
-    outs_dims.resize(n_ids);
-    outs_extended_dims.resize(n_ids);
-    for (size_t i = 0; i < n_ids; ++i) {
-      const auto ids_dims = all_ids_dim[i];
-      int ids_rank = ids_dims.size();
-      PADDLE_ENFORCE_EQ(ids_dims[ids_rank - 1], 1,
-                        platform::errors::InvalidArgument(
-                            "Shape error in %lu id, the last dimension of the "
-                            "'Ids' tensor must be 1.",
-                            i));
-      auto out_dim = framework::vectorize(
-          framework::slice_ddim(ids_dims, 0, ids_rank - 1));
-      out_dim.push_back(emb_size);
-      outs_dims[i] = framework::make_ddim(out_dim);
+    auto flags = ctx->Attrs().Get<std::vector<int>>("mask");
+    if (flags.empty()) {
+      for (size_t i = 0; i < n_ids; ++i) {
+        const auto ids_dims = all_ids_dim[i];
+        int ids_rank = ids_dims.size();
+        PADDLE_ENFORCE_EQ(
+            ids_dims[ids_rank - 1], 1,
+            platform::errors::InvalidArgument(
+                "Shape error in %lu id, the last dimension of the "
+                "'Ids' tensor must be 1.",
+                i));
+        auto out_dim = framework::vectorize(
+            framework::slice_ddim(ids_dims, 0, ids_rank - 1));
+        out_dim.push_back(emb_size);
+        outs_dims.push_back(framework::make_ddim(out_dim));
+        auto out_extended_dim = framework::vectorize(
+            framework::slice_ddim(ids_dims, 0, ids_rank - 1));
+        out_extended_dim.push_back(emb_extended_size);
+        outs_extended_dims.push_back(framework::make_ddim(out_extended_dim));
+      }
+      ctx->SetOutputsDim("Out", outs_dims);
+      ctx->SetOutputsDim("OutExtend", outs_extended_dims);
 
-      auto out_extended_dim = framework::vectorize(
-          framework::slice_ddim(ids_dims, 0, ids_rank - 1));
-      out_extended_dim.push_back(emb_extended_size);
-      outs_extended_dims[i] = framework::make_ddim(out_extended_dim);
-    }
-    ctx->SetOutputsDim("Out", outs_dims);
-    ctx->SetOutputsDim("OutExtend", outs_extended_dims);
-    for (size_t i = 0; i < n_ids; ++i) {
-      ctx->ShareLoD("Ids", "Out", i, i);
-      ctx->ShareLoD("Ids", "OutExtend", i, i);
+      for (size_t i = 0; i < n_ids; ++i) {
+        ctx->ShareLoD("Ids", "Out", i, i);
+        ctx->ShareLoD("Ids", "OutExtend", i, i);
+      }
+    } else {
+      for (size_t i = 0; i < n_ids; ++i) {
+        const auto ids_dims = all_ids_dim[i];
+        int ids_rank = ids_dims.size();
+        PADDLE_ENFORCE_EQ(
+            ids_dims[ids_rank - 1], 1,
+            platform::errors::InvalidArgument(
+                "Shape error in %lu id, the last dimension of the "
+                "'Ids' tensor must be 1.",
+                i));
+        if (flags[i] & 0x01) {
+          auto out_dim = framework::vectorize(
+              framework::slice_ddim(ids_dims, 0, ids_rank - 1));
+          out_dim.push_back(emb_size);
+          outs_dims.push_back(framework::make_ddim(out_dim));
+        }
+        if (flags[i] & 0x02) {
+          auto out_extended_dim = framework::vectorize(
+              framework::slice_ddim(ids_dims, 0, ids_rank - 1));
+          out_extended_dim.push_back(emb_extended_size);
+          outs_extended_dims.push_back(framework::make_ddim(out_extended_dim));
+        }
+      }
+      ctx->SetOutputsDim("Out", outs_dims);
+      ctx->SetOutputsDim("OutExtend", outs_extended_dims);
+
+      size_t embedx_idx = 0;
+      size_t expand_idx = 0;
+      for (size_t i = 0; i < n_ids; ++i) {
+        if (flags[i] & 0x01) {
+          ctx->ShareLoD("Ids", "Out", i, embedx_idx);
+          ++embedx_idx;
+        }
+        if (flags[i] & 0x02) {
+          ctx->ShareLoD("Ids", "OutExtend", i, expand_idx);
+          ++expand_idx;
+        }
+      }
     }
   }
 
@@ -91,6 +132,7 @@ class PullBoxExtendedSparseOpMaker : public framework::OpProtoAndCheckerMaker {
     AddAttr<int>("emb_extended_size",
                  "(int, the extended_embedding hidden size")
         .SetDefault(128);
+    AddAttr<std::vector<int>>("mask", "The embedx expand mask.").SetDefault({});
     AddComment(R"DOC(
 Pull Box Extended Sparse Operator.
 

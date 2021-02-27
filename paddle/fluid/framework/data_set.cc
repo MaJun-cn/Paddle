@@ -36,6 +36,7 @@
 #endif
 
 DECLARE_bool(padbox_dataset_disable_shuffle);
+DECLARE_bool(padbox_dataset_disable_polling);
 
 namespace paddle {
 namespace framework {
@@ -1427,7 +1428,7 @@ void PadBoxSlotDataset::CreateChannel() {
 // set filelist, file_idx_ will reset to zero.
 void PadBoxSlotDataset::SetFileList(const std::vector<std::string>& filelist) {
   VLOG(3) << "filelist size: " << filelist.size();
-  if (mpi_size_ > 1) {
+  if (mpi_size_ > 1 && !FLAGS_padbox_dataset_disable_polling) {
     // dualbox
     int num = static_cast<int>(filelist.size());
     for (int i = mpi_rank_; i < num; i = i + mpi_size_) {

@@ -37,12 +37,10 @@ int BoxWrapper::feature_type_ = 0;
 float BoxWrapper::pull_embedx_scale_ = 1.0;
 
 void BasicAucCalculator::add_unlock_data(double pred, int label) {
-  PADDLE_ENFORCE_GE(
-      pred, 0.0,
-      platform::errors::PreconditionNotMet("pred should be greater than 0"));
-  PADDLE_ENFORCE_LE(
-      pred, 1.0,
-      platform::errors::PreconditionNotMet("pred should be lower than 1"));
+  PADDLE_ENFORCE_GE(pred, 0.0, platform::errors::PreconditionNotMet(
+                                   "pred should be greater than 0"));
+  PADDLE_ENFORCE_LE(pred, 1.0, platform::errors::PreconditionNotMet(
+                                   "pred should be lower than 1"));
   PADDLE_ENFORCE_EQ(
       label * label, label,
       platform::errors::PreconditionNotMet(
@@ -406,18 +404,19 @@ void BoxWrapper::PushSparseGrad(const paddle::platform::Place& place,
     }                                                                        \
   } break
 
-#define PUSHSPARSE_CASE(i, ...)                                                  \
-  case i: {                                                                      \
-    constexpr size_t ExpandDim = i;                                              \
-    if (feature_type_ == static_cast<int>(boxps::FEATURE_PCOC)) {                \
-      PushSparseGradCase<boxps::FeaturePushValueGpuPCOC<EmbedxDim, ExpandDim>>(  \
-          place, keys, grad_values, slot_lengths, hidden_size, expand_embed_dim, \
-          batch_size);                                                           \
-    } else {                                                                     \
-      PushSparseGradCase<boxps::FeaturePushValueGpu<EmbedxDim, ExpandDim>>(      \
-          place, keys, grad_values, slot_lengths, hidden_size, expand_embed_dim, \
-          batch_size);                                                           \
-    }                                                                            \
+#define PUSHSPARSE_CASE(i, ...)                                             \
+  case i: {                                                                 \
+    constexpr size_t ExpandDim = i;                                         \
+    if (feature_type_ == static_cast<int>(boxps::FEATURE_PCOC)) {           \
+      PushSparseGradCase<                                                   \
+          boxps::FeaturePushValueGpuPCOC<EmbedxDim, ExpandDim>>(            \
+          place, keys, grad_values, slot_lengths, hidden_size,              \
+          expand_embed_dim, batch_size);                                    \
+    } else {                                                                \
+      PushSparseGradCase<boxps::FeaturePushValueGpu<EmbedxDim, ExpandDim>>( \
+          place, keys, grad_values, slot_lengths, hidden_size,              \
+          expand_embed_dim, batch_size);                                    \
+    }                                                                       \
   } break
 
   CheckEmbedSizeIsValid(hidden_size - cvm_offset_, expand_embed_dim);
@@ -477,9 +476,8 @@ void BasicAucCalculator::calculate_bucket_error() {
 void BoxWrapper::FeedPass(int date,
                           const std::vector<uint64_t>& feasgin_to_box) {
   int ret = boxps_ptr_->FeedPass(date, feasgin_to_box);
-  PADDLE_ENFORCE_EQ(
-      ret, 0,
-      platform::errors::PreconditionNotMet("FeedPass failed in BoxPS."));
+  PADDLE_ENFORCE_EQ(ret, 0, platform::errors::PreconditionNotMet(
+                                "FeedPass failed in BoxPS."));
 }
 
 void BoxWrapper::BeginFeedPass(int date, boxps::PSAgentBase** agent) {
@@ -493,23 +491,24 @@ void BoxWrapper::BeginFeedPass(int date, boxps::PSAgentBase** agent) {
     VLOG(3) << "lookup input dim: " << input_table_dim_;
     input_table_deque_.emplace_back(input_table_dim_);
   }
-  PADDLE_ENFORCE_EQ(
-      ret, 0,
-      platform::errors::PreconditionNotMet("BeginFeedPass failed in BoxPS."));
+  PADDLE_ENFORCE_EQ(ret, 0, platform::errors::PreconditionNotMet(
+                                "BeginFeedPass failed in BoxPS."));
 }
 
 void BoxWrapper::EndFeedPass(boxps::PSAgentBase* agent) {
   if (FLAGS_use_gpu_replica_cache) {
-    gpu_replica_cache.back().ToHBM();
+    auto& t = gpu_replica_cache.back();
+    t.ToHBM();
+    VLOG(0) << "gpu cache memory: " << t.GpuMemUsed() << "MB";
   }
   if (dataset_name_ == "InputTableDataset") {
     auto& t = input_table_deque_.back();
-    VLOG(3) << "input table size: " << t.size() << " miss: " << t.miss();
+    VLOG(0) << "input table size: " << t.size() << " miss: " << t.miss()
+            << ", cpu memory: " << t.CpuMemUsed() << "MB";
   }
   int ret = boxps_ptr_->EndFeedPass(agent);
-  PADDLE_ENFORCE_EQ(
-      ret, 0,
-      platform::errors::PreconditionNotMet("EndFeedPass failed in BoxPS."));
+  PADDLE_ENFORCE_EQ(ret, 0, platform::errors::PreconditionNotMet(
+                                "EndFeedPass failed in BoxPS."));
 }
 
 void BoxWrapper::BeginPass() {
@@ -519,9 +518,8 @@ void BoxWrapper::BeginPass() {
     dev.ResetTimer();
   }
   int ret = boxps_ptr_->BeginPass();
-  PADDLE_ENFORCE_EQ(
-      ret, 0,
-      platform::errors::PreconditionNotMet("BeginPass failed in BoxPS."));
+  PADDLE_ENFORCE_EQ(ret, 0, platform::errors::PreconditionNotMet(
+                                "BeginPass failed in BoxPS."));
 }
 
 void BoxWrapper::SetTestMode(bool is_test) const {
@@ -547,7 +545,8 @@ void BoxWrapper::EndPass(bool need_save_delta) {
                  << ", push span: " << dev.all_push_timer.ElapsedSec()
                  << ", boxps span:" << dev.boxps_push_timer.ElapsedSec()
                  << ", dense nccl:" << dev.dense_nccl_timer.ElapsedSec()
-                 << ", sync stream:" << dev.dense_sync_timer.ElapsedSec();
+                 << ", sync stream:" << dev.dense_sync_timer.ElapsedSec()
+                 << ", wrapper gpu memory:" << dev.GpuMemUsed() << "MB";
   }
 }
 

@@ -13,9 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include <thrust/device_vector.h>
+#include <cub/cub.cuh>
 #include "paddle/fluid/framework/ddim.h"
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/operators/where_index_op.h"
+#include "paddle/fluid/platform/cuda_helper.h"
 #include "paddle/fluid/platform/cuda_primitives.h"
 #include "paddle/fluid/platform/for_range.h"
 
@@ -24,6 +26,18 @@ namespace operators {
 
 using CUDADeviceContext = paddle::platform::CUDADeviceContext;
 
+// CUDA: use 512 threads per block
+const int CUDA_NUM_THREADS = 512;
+// CUDA: number of blocks for threads.
+inline int GET_BLOCKS(const int N) {
+  return (N + CUDA_NUM_THREADS - 1) / CUDA_NUM_THREADS;
+}
+
+template <typename T>
+__global__ void fill_idx(const size_t N, T* idx) {
+  CUDA_KERNEL_LOOP(i, N) { idx[i] = i; }
+}
+
 template <typename T>
 class CUDAWhereIndexKernel : public framework::OpKernel<T> {
  public:
@@ -31,7 +45,40 @@ class CUDAWhereIndexKernel : public framework::OpKernel<T> {
     auto* condition = context.Input<framework::Tensor>("Condition");
     auto* out = context.Output<framework::Tensor>("Out");
 
+    int64_t numel = condition->numel();
+    auto dims = condition->dims();
+    int rank = dims.size();
+
+    auto place = context.GetPlace();
+
+    framework::Tensor temp_tensor;
+    int64_t* d_idx = temp_tensor.mutable_data<int64_t>(
+        {static_cast<int64_t>(numel * 2 + rank), 1}, place);
+    int64_t* ptr_true_index = &d_idx[numel];
+    int64_t* d_num_item = &ptr_true_index[numel];
+
+    auto stream = context.cuda_device_context().stream();
+    fill_idx<<<GET_BLOCKS(numel), CUDA_NUM_THREADS, 0, stream>>>(numel, d_idx);
+    const T* d_conds = condition->data<T>();
+
+    size_t d_buff_bytes = 0;
+    // Run selection values get idx
+    cub::DevicePartition::Flagged(NULL, d_buff_bytes, d_idx, d_conds,
+                                  ptr_true_index, d_num_item, numel, stream);
+    auto d_buff = memory::AllocShared(place, d_buff_bytes);
+    cub::DevicePartition::Flagged(d_buff->ptr(), d_buff_bytes, d_idx, d_conds,
+                                  ptr_true_index, d_num_item, numel, stream);
+
+    int64_t true_num = 0;
+    cudaMemcpyAsync(reinterpret_cast<void*>(&true_num),
+                    reinterpret_cast<void*>(d_num_item), sizeof(int64_t),
+                    cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+
+    //    printf("total %ld, true_num %d\n", numel, true_num);
+
     // TODO(zhoukunsheng): Should optimize to ensure GPU is faster than CPU.
+    /**
     framework::Tensor cond_cpu;
     framework::TensorCopy(*condition, platform::CPUPlace(), &cond_cpu);
 
@@ -50,7 +97,7 @@ class CUDAWhereIndexKernel : public framework::OpKernel<T> {
     int64_t* ptr_true_index = thrust::raw_pointer_cast(d_true_index.data());
 
     size_t true_num = h_true_index.size();
-
+    */
     out->Resize(framework::make_ddim({static_cast<int64_t>(true_num), rank}));
     auto out_ptr = out->mutable_data<int64_t>(context.GetPlace());
 
@@ -58,19 +105,25 @@ class CUDAWhereIndexKernel : public framework::OpKernel<T> {
       return;
     }
 
-    thrust::host_vector<int64_t> h_stride(rank, 0);
+    //    thrust::host_vector<int64_t> h_stride(rank, 0);
+    std::vector<int64_t> h_stride(rank, 0);
     h_stride[rank - 1] = 1;
     for (int i = rank - 2; i >= 0; i--) {
       h_stride[i] = h_stride[i + 1] * dims[i + 1];
     }
-    thrust::device_vector<int64_t> d_stride = h_stride;
-    int64_t* ptr_stride = thrust::raw_pointer_cast(d_stride.data());
+    //    thrust::device_vector<int64_t> d_stride = h_stride;
+    //    int64_t* ptr_stride = thrust::raw_pointer_cast(d_stride.data());
+    int64_t* ptr_stride = d_num_item;
+    cudaMemcpyAsync(reinterpret_cast<void*>(ptr_stride),
+                    reinterpret_cast<void*>(h_stride.data()),
+                    sizeof(int64_t) * rank, cudaMemcpyHostToDevice, stream);
 
     auto& dev_ctx = context.template device_context<CUDADeviceContext>();
     WhereIndexFunctor<int64_t> functor(ptr_true_index, true_num, ptr_stride,
                                        rank, out_ptr);
     platform::ForRange<CUDADeviceContext> for_range(dev_ctx, true_num);
     for_range(functor);
+    cudaStreamSynchronize(stream);
   }
 };
 

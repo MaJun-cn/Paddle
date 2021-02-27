@@ -49,10 +49,15 @@ struct SetConstant {
 
 template <typename Place>
 void set_constant_with_place(const platform::DeviceContext& context,
-                             framework::Tensor* tensor, float value);
+                             framework::Tensor* tensor, const void* value);
 
 void set_constant(const platform::DeviceContext& context,
-                  framework::Tensor* tensor, float value);
+                  framework::Tensor* tensor, const void* value);
+template <typename T>
+void set_constant(const platform::DeviceContext& context,
+                  framework::Tensor* tensor, const T value) {
+  set_constant(context, tensor, reinterpret_cast<const void*>(&value));
+}
 
 template <typename DeviceContext, typename T>
 struct RowwiseAdd {

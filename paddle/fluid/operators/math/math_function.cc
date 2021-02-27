@@ -127,42 +127,43 @@ DEFINE_CPU_TRANS_NORMAL(platform::complex64);
 DEFINE_CPU_TRANS_NORMAL(platform::complex128);
 
 struct TensorSetConstantCPU {
-  TensorSetConstantCPU(framework::Tensor* tensor, float value)
+  TensorSetConstantCPU(framework::Tensor* tensor, const void* value)
       : tensor_(tensor), value_(value) {}
   template <typename T>
   void apply() const {
     auto cpu = platform::CPUPlace();
     auto* begin = tensor_->mutable_data<T>(cpu);
-    std::fill(begin, begin + tensor_->numel(), static_cast<T>(value_));
+    const T* num = reinterpret_cast<const T*>(value_);
+    std::fill(begin, begin + tensor_->numel(), static_cast<T>(*num));
   }
   framework::Tensor* tensor_;
-  float value_;
+  const void* value_;
 };
 
 template <>
 void set_constant_with_place<platform::XPUPlace>(
     const platform::DeviceContext& context, framework::Tensor* tensor,
-    float value) {
+    const void* value) {
   PADDLE_THROW(platform::errors::Unimplemented("XPUPlace is not supported"));
 }
 
 template <>
 void set_constant_with_place<platform::CPUPlace>(
     const platform::DeviceContext& context, framework::Tensor* tensor,
-    float value) {
+    const void* value) {
   framework::VisitDataType(tensor->type(), TensorSetConstantCPU(tensor, value));
 }
 
 template <>
 void set_constant_with_place<platform::CUDAPinnedPlace>(
     const platform::DeviceContext& context, framework::Tensor* tensor,
-    float value) {
+    const void* value) {
   framework::VisitDataType(tensor->type(), TensorSetConstantCPU(tensor, value));
 }
 
 struct TensorSetConstantWithPlace : public boost::static_visitor<void> {
   TensorSetConstantWithPlace(const platform::DeviceContext& context,
-                             framework::Tensor* tensor, float value)
+                             framework::Tensor* tensor, const void* value)
       : context_(context), tensor_(tensor), value_(value) {}
 
   template <typename Place>
@@ -172,11 +173,11 @@ struct TensorSetConstantWithPlace : public boost::static_visitor<void> {
 
   const platform::DeviceContext& context_;
   framework::Tensor* tensor_;
-  float value_;
+  const void* value_;
 };
 
 void set_constant(const platform::DeviceContext& context,
-                  framework::Tensor* tensor, float value) {
+                  framework::Tensor* tensor, const void* value) {
   TensorSetConstantWithPlace func(context, tensor, value);
 #ifdef PADDLE_WITH_CUDA
   tensor->place().apply_visitor(func);

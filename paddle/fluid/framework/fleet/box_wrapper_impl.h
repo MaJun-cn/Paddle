@@ -38,12 +38,15 @@ void BoxWrapper::PullSparseCase(const paddle::platform::Place& place,
   all_timer.Resume();
 
   // construct slot_level lod info
-  auto slot_lengths_lod = slot_lengths;
+  std::vector<int64_t> slot_lengths_lod;
+  slot_lengths_lod.push_back(0);
+
+  int64_t total_length = 0;
   int slot_num = static_cast<int>(slot_lengths.size());
-  for (int i = 1; i < slot_num; i++) {
-    slot_lengths_lod[i] += slot_lengths_lod[i - 1];
+  for (int i = 0; i < slot_num; i++) {
+    total_length += slot_lengths[i];
+    slot_lengths_lod.push_back(total_length);
   }
-  int64_t total_length = slot_lengths_lod[slot_num - 1];
   size_t total_bytes =
       reinterpret_cast<size_t>(total_length * sizeof(FEATURE_VALUE_GPU_TYPE));
 #if defined(PADDLE_WITH_CUDA) && !defined(_WIN32)
@@ -84,11 +87,11 @@ void BoxWrapper::PullSparseCase(const paddle::platform::Place& place,
         dev.keys2slot.mutable_data<int>({total_length, 1}, place));
     uint64_t** gpu_keys = reinterpret_cast<uint64_t**>(dev.gpu_keys_ptr->ptr());
     int64_t* slot_lens = reinterpret_cast<int64_t*>(
-        dev.slot_lens.mutable_data<int64_t>({slot_num, 1}, place));
+        dev.slot_lens.mutable_data<int64_t>({(slot_num + 1), 1}, place));
     cudaMemcpyAsync(gpu_keys, keys.data(), keys.size() * sizeof(uint64_t*),
                     cudaMemcpyHostToDevice, stream);
     cudaMemcpyAsync(slot_lens, slot_lengths_lod.data(),
-                    slot_lengths.size() * sizeof(int64_t),
+                    slot_lengths_lod.size() * sizeof(int64_t),
                     cudaMemcpyHostToDevice, stream);
     this->CopyKeys(place, gpu_keys, total_keys, slot_lens, slot_num,
                    static_cast<int>(total_length), key2slot);

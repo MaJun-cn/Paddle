@@ -17,6 +17,7 @@ limitations under the License. */
 #include <vector>
 #include "cub/cub.cuh"
 #include "paddle/fluid/framework/op_registry.h"
+#include "paddle/fluid/operators/tensor_formatter.h"
 #include "paddle/fluid/operators/top_k_function_cuda.h"
 #include "paddle/fluid/operators/top_k_op.h"
 #include "paddle/fluid/platform/float16.h"
@@ -26,6 +27,102 @@ namespace paddle {
 namespace operators {
 
 using Tensor = framework::Tensor;
+
+template <typename T>
+struct MoreCompare {
+  __inline__ __device__ bool compare(const T& a, const T& b) const {
+    return a > b;
+  }
+};
+template <typename T>
+struct LessCompare {
+  __inline__ __device__ bool compare(const T& a, const T& b) const {
+    return a < b;
+  }
+};
+
+template <typename T>
+__global__ void FillTopKValue(const size_t N, const T* input, T* value,
+                              int64_t* indices, const int64_t num_cols) {
+  CUDA_KERNEL_LOOP(i, N) {
+    indices[i] = (i % num_cols);
+    value[i] = input[i];
+  }
+}
+template <typename T, typename Compare>
+__global__ void KernelSortTopK(const size_t num_rows, const T* input_val,
+                               T* values, int64_t* indices,
+                               const int64_t num_cols, const int K,
+                               const Compare& op) {
+  CUDA_KERNEL_LOOP(idx, num_rows) {
+    const T* in = &input_val[idx * num_cols];
+    T* val = &values[idx * K];
+    int64_t* ind = &indices[idx * K];
+
+    if (op.compare(in[0], in[1])) {
+      for (int i = 0; i < K; ++i) {
+        val[i] = in[i];
+        ind[i] = i;
+      }
+    } else {
+      for (int i = 0; i < K; ++i) {
+        int pos = (i + 1) % K;
+        val[i] = in[pos];
+        ind[i] = pos;
+      }
+    }
+  }
+}
+
+// static
+// void PrintValue(const framework::Tensor* in_tensor, const std::string &name,
+// const std::string &message = "") {
+//    const framework::LoDTensor *lod_tensor = reinterpret_cast<const
+//    framework::LoDTensor *>(in_tensor);
+//    TensorFormatter formatter;
+//    formatter.SetPrintTensorType(true);
+//    formatter.SetPrintTensorShape(true);
+//    formatter.SetPrintTensorLod(true);
+//    formatter.SetPrintTensorLayout(true);
+//    formatter.SetSummarize(100);
+//    formatter.Print(*lod_tensor, name, message);
+//}
+
+// use the radix sort for the topk
+template <typename T>
+bool SortMinTopK(const platform::CUDADeviceContext& ctx,
+                 const framework::Tensor* input_tensor, const int64_t num_cols,
+                 const int64_t num_rows, const int K,
+                 framework::Tensor* out_tensor,
+                 framework::Tensor* indices_tensor, bool largest = true) {
+  auto cu_stream = ctx.stream();
+  auto place = ctx.GetPlace();
+
+  const T* input_values = input_tensor->data<T>();
+  int64_t* indices = indices_tensor->mutable_data<int64_t>(place);
+  T* values = out_tensor->mutable_data<T>(place);
+
+  // one cols
+  if (num_cols == 1) {
+    // fill index
+    FillTopKValue<<<GET_BLOCKS(num_cols * num_rows), CUDA_NUM_THREADS, 0,
+                    cu_stream>>>((num_cols * num_rows), input_values, values,
+                                 indices, num_cols);
+    return true;
+  }
+
+  if (largest) {
+    MoreCompare<T> op;
+    // Sort TopK value
+    KernelSortTopK<<<GET_BLOCKS(num_rows), CUDA_NUM_THREADS, 0, cu_stream>>>(
+        num_rows, input_values, values, indices, num_cols, K, op);
+  } else {
+    LessCompare<T> op;
+    KernelSortTopK<<<GET_BLOCKS(num_rows), CUDA_NUM_THREADS, 0, cu_stream>>>(
+        num_rows, input_values, values, indices, num_cols, K, op);
+  }
+  return true;
+}
 
 #define FIXED_BLOCK_DIM_BASE(dim, ...) \
   case (dim): {                        \
@@ -71,9 +168,20 @@ class TopkOpCUDAKernel : public framework::OpKernel<T> {
         framework::slice_ddim(inputdims, 0, inputdims.size() - 1));
     const int64_t input_width = inputdims[inputdims.size() - 1];
     const auto& dev_ctx = ctx.cuda_device_context();
+    if (input_width <= 2 && k <= input_width) {
+      // cols is small and large rows data
+      if (SortMinTopK<T>(dev_ctx, input, input_width, input_height, k, output,
+                         indices)) {
+        //            PrintValue(indices, "indices");
+        //            PrintValue(output, "values");
+        return;
+      }
+    }
     if ((input_width <= 1024 || k >= 128 || k == input_width)) {
       if (SortTopk<T>(dev_ctx, input, input_width, input_height, k, output,
                       indices)) {
+        //        PrintValue(indices, "indices");
+        //        PrintValue(output, "values");
         // Successed, return.
         return;
       } else {

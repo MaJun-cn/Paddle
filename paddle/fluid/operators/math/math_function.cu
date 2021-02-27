@@ -153,7 +153,7 @@ DEFINE_GPU_TRANS_NORMAL(complex128);
 
 struct TensorSetConstantGPU {
   TensorSetConstantGPU(const platform::DeviceContext& context,
-                       framework::Tensor* tensor, float value)
+                       framework::Tensor* tensor, const void* value)
       : context_(context), tensor_(tensor), value_(value) {}
 
   template <typename T>
@@ -167,19 +167,20 @@ struct TensorSetConstantGPU {
       return;
     }
     auto& ctx = reinterpret_cast<const platform::CUDADeviceContext&>(context_);
+    const T* num = reinterpret_cast<const T*>(value_);
     FillConstantKernel<T><<<(N + 512 - 1) / 512, 512, 0, ctx.stream()>>>(
-        N, tensor_->mutable_data<T>(ctx.GetPlace()), static_cast<T>(value_));
+        N, tensor_->mutable_data<T>(ctx.GetPlace()), static_cast<T>(*num));
   }
 
   const platform::DeviceContext& context_;
   framework::Tensor* tensor_;
-  float value_;
+  const void* value_;
 };
 
 template <>
 void set_constant_with_place<platform::CUDAPlace>(
     const platform::DeviceContext& context, framework::Tensor* tensor,
-    float value) {
+    const void* value) {
   framework::VisitDataType(tensor->type(),
                            TensorSetConstantGPU(context, tensor, value));
 }

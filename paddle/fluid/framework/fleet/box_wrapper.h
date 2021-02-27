@@ -168,6 +168,9 @@ class GpuReplicaCache {
   void PullCacheValue(uint64_t* d_keys, float* d_vals, int num, int gpu_id);
   int emb_dim_ = 0;
   std::vector<float*> d_embs_;
+  double GpuMemUsed(void) {
+    return h_emb_count_ * emb_dim_ * sizeof(float) / 1024.0 / 1024.0;
+  }
 
  private:
   int h_emb_count_ = 0;
@@ -225,6 +228,10 @@ class InputTable {
 
   size_t dim() const { return dim_; }
 
+  double CpuMemUsed(void) {
+    return (key_offset_.size() * dim_ * sizeof(float)) / 1024.0 / 1024.0;
+  }
+
  protected:
   uint64_t dim_;
   std::mutex table_mutex_;
@@ -262,6 +269,25 @@ class BoxWrapper {
       boxps_push_timer.Reset();
       dense_nccl_timer.Reset();
       dense_sync_timer.Reset();
+    }
+    double GpuMemUsed(void) {
+      size_t total = 0;
+      total += keys_tensor.memory_size();
+      total += dims_tensor.memory_size();
+      if (pull_push_buf != nullptr) {
+        total += pull_push_buf->size();
+      }
+      if (gpu_keys_ptr != nullptr) {
+        total += gpu_keys_ptr->size();
+      }
+      if (gpu_values_ptr != nullptr) {
+        total += gpu_values_ptr->size();
+      }
+      total += slot_lens.memory_size();
+      total += d_slot_vector.memory_size();
+      total += keys2slot.memory_size();
+      total += qvalue.memory_size();
+      return total / 1024.0 / 1024.0;
     }
   };
 
@@ -436,9 +462,8 @@ class BoxWrapper {
     std::string ret_str;
     int ret = boxps_ptr_->SaveBase(batch_model_path, xbox_model_path, ret_str,
                                    seconds_from_1970 / 86400);
-    PADDLE_ENFORCE_EQ(
-        ret, 0,
-        platform::errors::PreconditionNotMet("SaveBase failed in BoxPS."));
+    PADDLE_ENFORCE_EQ(ret, 0, platform::errors::PreconditionNotMet(
+                                  "SaveBase failed in BoxPS."));
     return ret_str;
   }
 
@@ -446,9 +471,8 @@ class BoxWrapper {
     VLOG(3) << "Begin SaveDelta";
     std::string ret_str;
     int ret = boxps_ptr_->SaveDelta(xbox_model_path, ret_str);
-    PADDLE_ENFORCE_EQ(
-        ret, 0,
-        platform::errors::PreconditionNotMet("SaveDelta failed in BoxPS."));
+    PADDLE_ENFORCE_EQ(ret, 0, platform::errors::PreconditionNotMet(
+                                  "SaveDelta failed in BoxPS."));
     return ret_str;
   }
 
@@ -536,9 +560,8 @@ class BoxWrapper {
     std::string user = fs_ugi.substr(0, split);
     std::string pwd = fs_ugi.substr(split + 1);
     bool ret = file_manager_->initialize(fs_name, user, pwd, conf_path);
-    PADDLE_ENFORCE_EQ(ret, true,
-                      platform::errors::PreconditionNotMet(
-                          "Called AFSAPI Init Interface Failed."));
+    PADDLE_ENFORCE_EQ(ret, true, platform::errors::PreconditionNotMet(
+                                     "Called AFSAPI Init Interface Failed."));
     use_afs_api_ = true;
   }
 

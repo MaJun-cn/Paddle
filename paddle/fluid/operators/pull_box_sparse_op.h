@@ -20,6 +20,7 @@
 #include "paddle/fluid/framework/fleet/box_wrapper.h"
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/framework/tensor.h"
+#include "paddle/fluid/operators/math/math_function.h"
 
 namespace paddle {
 namespace operators {
@@ -31,10 +32,14 @@ static void PaddingZeros(const framework::ExecutionContext &ctx,
   // set data
   data->Resize({1, hidden_size});
   data->mutable_data<T>(ctx.GetPlace());
-  auto data_eigen = framework::EigenVector<T>::Flatten(*data);
-  auto &place = *ctx.template device_context<platform::CUDADeviceContext>()
-                     .eigen_device();
-  data_eigen.device(place) = data_eigen.constant(static_cast<T>(0));
+
+  auto &dev_ctx = ctx.template device_context<platform::CUDADeviceContext>();
+  math::set_constant(dev_ctx, data, 0);
+
+  //  auto data_eigen = framework::EigenVector<T>::Flatten(*data);
+  //  auto &place = *ctx.template device_context<platform::CUDADeviceContext>()
+  //                     .eigen_device();
+  //  data_eigen.device(place) = data_eigen.constant(static_cast<T>(0));
 
   // set lod
   std::vector<size_t> v_lod(batch_size + 1, 1);

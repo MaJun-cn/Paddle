@@ -22,6 +22,7 @@ limitations under the License. */
 #include "paddle/fluid/framework/trainer_desc.pb.h"
 #include "paddle/fluid/platform/cpu_helper.h"
 #include "paddle/fluid/platform/device_context.h"
+#include "paddle/fluid/platform/gpu_info.h"
 #include "paddle/fluid/platform/lodtensor_printer.h"
 
 namespace paddle {
@@ -327,7 +328,64 @@ void BoxPSWorker::TrainFiles() {
   dev_ctx_->Wait();
   thread_scope_->DropKids();
 }
+/**
+static
+void print_hbm_mem(const int gpu_id, const char *name = "") {
+    size_t hbm_free = 0;
+    size_t hbm_total = 0;
+    platform::GpuMemoryUsage(&hbm_free, &hbm_total);
 
+    VLOG(0) << "hbm usage:("
+            << name << "), device_id: "
+            << gpu_id << " total_size: "
+            << (hbm_total >> 20) << "MB, "
+            << "free: " << (hbm_free >> 20) << " MB, "
+            << "used: " << ((hbm_total - hbm_free) >> 20) << "MB";
+}
+
+class GPUOpMemStat {
+public:
+    GPUOpMemStat(int device_id) :
+        device_id_(device_id),
+        start_mem_used_(0),
+        end_mem_used_(0) {
+
+    }
+
+    void start(void) {
+        start_mem_used_ = get_used_mem();
+    }
+
+    void stop(void) {
+        end_mem_used_ = get_used_mem();
+    }
+
+    void print(const std::string &name) {
+        size_t used_mem = ((end_mem_used_ - start_mem_used_) >> 20);
+        if (used_mem == 0) {
+            return;
+        }
+        VLOG(0) << "hbm usage:(" << name << "), "
+                << "device_id: " << device_id_
+                << " before: " << (start_mem_used_ >> 20) << "MB, "
+                << "after: " << (end_mem_used_ >> 20) << " MB, "
+                << "used: " << used_mem << "MB";
+    }
+
+private:
+    size_t get_used_mem(void) {
+        size_t hbm_free = 0;
+        size_t hbm_total = 0;
+        platform::GpuMemoryUsage(&hbm_free, &hbm_total);
+        return (hbm_total - hbm_free);
+    }
+
+private:
+    int device_id_;
+    size_t start_mem_used_;
+    size_t end_mem_used_;
+};
+*/
 void BoxPSWorker::TrainFilesWithProfiler() {
   VLOG(3) << "begin section_worker TrainFiles with profiler";
   AutoSetCPUAffinity(true);
@@ -355,6 +413,10 @@ void BoxPSWorker::TrainFilesWithProfiler() {
   platform::Timer timeline;
   device_reader_->Start();
 
+  //  print_hbm_mem(device_id_, "BoxPSWorker");
+  //
+  //  GPUOpMemStat op_mem(device_id_);
+
   outer_timer.Start();
   while (true) {
     main_timer.Resume();
@@ -371,11 +433,14 @@ void BoxPSWorker::TrainFilesWithProfiler() {
     int op_id = 0;
     dev_ctx_->Wait();
     for (auto& op : ops_) {
+      //      op_mem.start();
       timeline.Start();
       op->Run(*thread_scope_, place_);
       dev_ctx_->Wait();
       timeline.Pause();
       op_total_time[op_id++] += timeline.ElapsedUS();
+      //      op_mem.stop();
+      //      op_mem.print(op->Type());
     }
     dev_ctx_->Wait();
     cal_timer.Pause();

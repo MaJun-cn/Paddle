@@ -59,8 +59,8 @@ __all__ = [
     'multiclass_nms2', 'search_pyramid_hash', 'shuffle_batch', 'partial_concat',
     'sparse_embedding', 'partial_sum', 'tdm_child', 'rank_attention',
     'tdm_sampler', 'batch_fc', '_pull_box_extended_sparse', 'bilateral_slice',
-    'correlation', 'fused_bn_add_act', 'fused_seqpool_cvm', 'cross_norm_layer_hadamard',
-    'fused_seqpool_cvm_with_pcoc'
+    'correlation', 'fused_bn_add_act', 'fused_seqpool_cvm',
+    'cross_norm_layer_hadamard', 'fused_seqpool_cvm_with_pcoc'
 ]
 
 
@@ -1455,7 +1455,11 @@ def batch_fc(input,
     return helper.append_activation(pre_act)
 
 
-def _pull_box_extended_sparse(input, size, extend_size=64, dtype='float32'):
+def _pull_box_extended_sparse(input,
+                              size,
+                              extend_size=64,
+                              dtype='float32',
+                              mask=[]):
     r"""
     **Pull Box Extended Sparse Layer**
     This layer is used to lookup embeddings of IDs, provided by :attr:`input`, in
@@ -1482,24 +1486,40 @@ def _pull_box_extended_sparse(input, size, extend_size=64, dtype='float32'):
     helper = LayerHelper('pull_box_extended_sparse', **locals())
     helper.input_dtype()
     inputs = helper.multiple_input()
-    outs = [
-        helper.create_variable_for_type_inference(dtype)
-        for i in range(len(inputs))
-    ]
-    outs_extend = [
-        helper.create_variable_for_type_inference(dtype)
-        for i in range(len(inputs))
-    ]
+
+    if len(mask) == 0:
+        outs = [
+            helper.create_variable_for_type_inference(dtype)
+            for i in range(len(inputs))
+        ]
+        outs_extend = [
+            helper.create_variable_for_type_inference(dtype)
+            for i in range(len(inputs))
+        ]
+    else:
+        outs = []
+        outs_extend = []
+        for flag in mask:
+            if flag & 0x01:
+                outs.append(helper.create_variable_for_type_inference(dtype))
+            if flag & 0x02:
+                outs_extend.append(
+                    helper.create_variable_for_type_inference(dtype))
+
     helper.append_op(
         type='pull_box_extended_sparse',
         inputs={'Ids': inputs},
         outputs={'Out': outs,
                  'OutExtend': outs_extend},
-        attrs={'emb_size': size,
-               'emb_extended_size': extend_size})
+        attrs={
+            'emb_size': size,
+            'emb_extended_size': extend_size,
+            'mask': mask
+        })
     if len(outs) == 1:
         return outs[0], outs_extend[0]
     return outs, outs_extend
+
 
 def fused_seqpool_cvm(input,
                       pool_type,
@@ -1568,17 +1588,19 @@ def fused_seqpool_cvm(input,
 
     return outs
 
+
 def fused_seqpool_cvm_with_pcoc(input,
-                      pool_type,
-                      pcoc_cvm,
-                      pad_value=0.0,
-                      use_cvm=True,
-                      need_filter=False,
-                      show_coeff=0.2,
-                      clk_coeff=1.0,
-                      threshold=0.96,
-                      cvm_offset=2,
-                      quant_ratio=0):
+                                pool_type,
+                                pcoc_cvm,
+                                pad_value=0.0,
+                                use_cvm=True,
+                                need_filter=False,
+                                show_coeff=0.2,
+                                clk_coeff=1.0,
+                                threshold=0.96,
+                                cvm_offset=7,
+                                max_cvm_offset=7,
+                                quant_ratio=0):
     """
      **Notes: The Op only receives List of LoDTensor as input, only support SUM pooling now.
     :attr:`input`.
@@ -1626,6 +1648,7 @@ def fused_seqpool_cvm_with_pcoc(input,
             "pad_value": pad_value,
             "use_cvm": use_cvm,
             "cvm_offset": cvm_offset,
+            "max_cvm_offset": max_cvm_offset,
             "need_filter": need_filter,
             "show_coeff": show_coeff,
             "clk_coeff": clk_coeff,
@@ -1634,6 +1657,7 @@ def fused_seqpool_cvm_with_pcoc(input,
         })
 
     return outs
+
 
 def cross_norm_layer_hadamard(input,
                               fields_num,
@@ -1695,6 +1719,7 @@ def cross_norm_layer_hadamard(input,
             "sync_stats": sync_stats
         })
     return out
+
 
 def bilateral_slice(x, guide, grid, has_offset, name=None):
     """

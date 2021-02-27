@@ -60,7 +60,10 @@ static const std::unordered_map<std::string, int>& role_str2int() {
 
 static std::unordered_set<std::string>& op_type_nan_inf_white_list() {
   static std::unordered_set<std::string> _op_type_nan_inf_white_list = {
-      "coalesce_tensor", /* This Op will alloc tensor, and may not init space */
+      "coalesce_tensor",  // This Op will alloc tensor, and may not init space
+      "rank_attention",   // This Op input param too large init spent time too
+                          // long not zero
+      "c_mixallgather"    // This Op alloc more space not need init
   };
   return _op_type_nan_inf_white_list;
 }

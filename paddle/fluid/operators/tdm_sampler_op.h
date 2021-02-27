@@ -60,22 +60,25 @@ void TDMSamplerInner(const framework::ExecutionContext &context,
   VLOG(3) << "TDM: sample res length: " << sample_res_length;
 
   auto travel_dim = travel_lod_tensor.dims();
-  auto total_sample_nums = input_ids_num * sample_res_length;
+  //  auto total_sample_nums = input_ids_num * sample_res_length;
 
   // get all data
   auto *input_data = input_tensor.data<T>();
   auto *travel_data = travel_lod_tensor.data<TreeT>();
   auto *layer_data = layer_lod_tensor.data<TreeT>();
 
-  OutT zero = 0;
-  OutT one = 1;
-  std::vector<OutT> output_vec(total_sample_nums, zero);
-  std::vector<OutT> label_vec(total_sample_nums, zero);
-  std::vector<OutT> mask_vec(total_sample_nums, one);
+  //  OutT zero = 0;
+  //  OutT one = 1;
+  //  std::vector<OutT> output_vec(total_sample_nums, zero);
+  //  std::vector<OutT> label_vec(total_sample_nums, zero);
+  //  std::vector<OutT> mask_vec(total_sample_nums, one);
+
+  auto *output_data = out_tensor->mutable_data<OutT>(context.GetPlace());
+  auto *label_data = label_tensor->mutable_data<OutT>(context.GetPlace());
+  auto *mask_data = mask_tensor->mutable_data<OutT>(context.GetPlace());
 
   VLOG(3) << "End get input & output data";
   // generate uniform sampler
-
   auto seed = context.Attr<int>("seed");
   std::vector<Sampler *> sampler_vec{};
   for (size_t layer_index = 0; layer_index < layer_nums; layer_index++) {
@@ -84,10 +87,20 @@ void TDMSamplerInner(const framework::ExecutionContext &context,
     Sampler *sampler = new math::UniformSampler(layer_node_nums - 1, seed);
     sampler_vec.push_back(sampler);
   }
-  VLOG(3) << "TDM: get sampler ";
 
+  //  VLOG(3) << "TDM: get sampler ";
   for (int i = 0; i < input_ids_num; ++i) {
-    // find leaf node travel path
+    auto *output_vec = &output_data[i * sample_res_length];
+    auto *label_vec = &label_data[i * sample_res_length];
+    auto *mask_vec = &mask_data[i * sample_res_length];
+
+    // reset
+    for (auto off = 0; off < sample_res_length; ++off) {
+      output_vec[off] = 0;
+      label_vec[off] = 0;
+      mask_vec[off] = 1;
+    }
+
     T input_id = input_data[i];
     PADDLE_ENFORCE_LT(
         -1, input_id,
@@ -111,75 +124,83 @@ void TDMSamplerInner(const framework::ExecutionContext &context,
     int offset = 0;
     for (size_t layer_idx = 0; layer_idx < layer_nums; ++layer_idx) {
       int sample_num = neg_samples_num_vec[layer_idx];
-      VLOG(3) << "TDM: Sample num: " << sample_num;
+      //      VLOG(3) << "TDM: Sample num: " << sample_num;
 
-      int node_nums =
-          layer_offset_lod[layer_idx + 1] - layer_offset_lod[layer_idx];
-      VLOG(3) << "TDM: layer - " << layer_idx + 1
-              << " - has node_nums: " << node_nums;
+      //      int node_nums =
+      //          layer_offset_lod[layer_idx + 1] - layer_offset_lod[layer_idx];
+      //      VLOG(3) << "TDM: layer - " << layer_idx + 1
+      //              << " - has node_nums: " << node_nums;
+      //
+      //      PADDLE_ENFORCE_LE(
+      //          sample_num, node_nums - 1,
+      //          platform::errors::InvalidArgument(
+      //              "Neg sample nums id of OP(fluid.layers.tdm_sampler) at
+      //              layer %ld "
+      //              "expected <= %ld - 1 (positive included), but got %ld.
+      //              Please "
+      //              "check neg_samples_num_list.",
+      //              layer_idx, node_nums, sample_num));
 
-      PADDLE_ENFORCE_LE(
-          sample_num, node_nums - 1,
-          platform::errors::InvalidArgument(
-              "Neg sample nums id of OP(fluid.layers.tdm_sampler) at layer %ld "
-              "expected <= %ld - 1 (positive included), but got %ld. Please "
-              "check neg_samples_num_list.",
-              layer_idx, node_nums, sample_num));
-
-      int node_id_min = layer_offset_lod[layer_idx];
-      int node_id_max = layer_offset_lod[layer_idx + 1];
+      //      int node_id_min = layer_offset_lod[layer_idx];
+      //      int node_id_max = layer_offset_lod[layer_idx + 1];
 
       OutT positive_node_id =
           static_cast<OutT>(travel_data[start_offset + layer_idx]);
 
       if (positive_node_id == 0) {
         // skip padding
-        VLOG(3) << "TDM: Skip padding ";
+        //        VLOG(3) << "TDM: Skip padding ";
         for (int sample_index = 0;
              sample_index < sample_num + static_cast<int>(output_positive_flag);
              sample_index++) {
-          output_vec[i * sample_res_length + offset] = 0;
-          label_vec[i * sample_res_length + offset] = 0;
-          mask_vec[i * sample_res_length + offset] = 0;
-          VLOG(3) << "TDM: Res append positive "
-                  << output_vec[i * sample_res_length + offset]
-                  << " Label append positive "
-                  << label_vec[i * sample_res_length + offset]
-                  << " Mask append value "
-                  << mask_vec[i * sample_res_length + offset];
+          output_vec[offset] = 0;
+          label_vec[offset] = 0;
+          mask_vec[offset] = 0;
+          //          VLOG(3) << "TDM: Res append positive "
+          //                  << output_vec[offset]
+          //                  << " Label append positive "
+          //                  << label_vec[offset]
+          //                  << " Mask append value "
+          //                  << mask_vec[offset];
           offset += 1;
         }
         continue;
       }
-
-      PADDLE_ENFORCE_LE(
-          positive_node_id, node_id_max,
-          platform::errors::InvalidArgument(
-              "Positive node id of OP(fluid.layers.tdm_sampler) at layer %ld "
-              "expected >= %ld and <= %ld, but got %ld. Please check input "
-              "value.",
-              layer_idx, node_id_min, node_id_max, positive_node_id));
-      PADDLE_ENFORCE_LE(
-          node_id_min, positive_node_id,
-          platform::errors::InvalidArgument(
-              "Positive node id of OP(fluid.layers.tdm_sampler) at layer %ld "
-              "expected >= %ld and <= %ld, but got %ld. Please check input "
-              "value.",
-              layer_idx, node_id_min, node_id_max, positive_node_id));
+      //
+      //      PADDLE_ENFORCE_LE(
+      //          positive_node_id, node_id_max,
+      //          platform::errors::InvalidArgument(
+      //              "Positive node id of OP(fluid.layers.tdm_sampler) at layer
+      //              %ld "
+      //              "expected >= %ld and <= %ld, but got %ld. Please check
+      //              input "
+      //              "value.",
+      //              layer_idx, node_id_min, node_id_max, positive_node_id));
+      //      PADDLE_ENFORCE_LE(
+      //          node_id_min, positive_node_id,
+      //          platform::errors::InvalidArgument(
+      //              "Positive node id of OP(fluid.layers.tdm_sampler) at layer
+      //              %ld "
+      //              "expected >= %ld and <= %ld, but got %ld. Please check
+      //              input "
+      //              "value.",
+      //              layer_idx, node_id_min, node_id_max, positive_node_id));
 
       // If output positive, add itself
       if (output_positive_flag) {
-        output_vec[i * sample_res_length + offset] = positive_node_id;
-        label_vec[i * sample_res_length + offset] = 1;
-        mask_vec[i * sample_res_length + offset] = 1;
-        VLOG(3) << "TDM: node id: " << positive_node_id << " Res append  "
-                << output_vec[i * sample_res_length + offset]
-                << " Label append  "
-                << label_vec[i * sample_res_length + offset] << " Mask append  "
-                << mask_vec[i * sample_res_length + offset];
+        output_vec[offset] = positive_node_id;
+        label_vec[offset] = 1;
+        mask_vec[offset] = 1;
+        //        VLOG(3) << "TDM: node id: " << positive_node_id << " Res
+        //        append  "
+        //                << output_vec[offset]
+        //                << " Label append  "
+        //                << label_vec[offset] << " Mask append  "
+        //                << mask_vec[offset];
         offset += 1;
       }
-      std::vector<int> sample_res_vec{};
+
+      std::set<int> sample_res_vec;
       // Sampling at layer, until samples enough
       for (int sample_index = 0; sample_index < sample_num; ++sample_index) {
         // Avoid sampling to positive samples
@@ -188,43 +209,43 @@ void TDMSamplerInner(const framework::ExecutionContext &context,
           sample_res = sampler_vec[layer_idx]->Sample();
         } while (positive_node_id ==
                      layer_data[layer_offset_lod[layer_idx] + sample_res] ||
-                 find(sample_res_vec.begin(), sample_res_vec.end(),
-                      sample_res) != sample_res_vec.end());
-        sample_res_vec.push_back(sample_res);
+                 sample_res_vec.find(sample_res) != sample_res_vec.end());
+        sample_res_vec.insert(sample_res);
 
-        output_vec[i * sample_res_length + offset] = static_cast<OutT>(
+        output_vec[offset] = static_cast<OutT>(
             layer_data[layer_offset_lod[layer_idx] + sample_res]);
-        label_vec[i * sample_res_length + offset] = 0;
-        mask_vec[i * sample_res_length + offset] = 1;
-        VLOG(3) << "TDM: node id: " << travel_data[start_offset + layer_idx]
-                << " Res append negitive "
-                << output_vec[i * sample_res_length + offset]
-                << " Label append negitive "
-                << label_vec[i * sample_res_length + offset]
-                << " Mask append value "
-                << mask_vec[i * sample_res_length + offset];
-
-        PADDLE_ENFORCE_LE(
-            layer_data[layer_offset_lod[layer_idx] + sample_res], node_id_max,
-            platform::errors::InvalidArgument(
-                "Negative node id of OP(fluid.layers.tdm_sampler) at layer %ld"
-                "expected >= %ld and <= %ld, but got %ld. Please check input "
-                "tdm tree structure and tdm travel info.",
-                layer_idx, node_id_min, node_id_max,
-                layer_data[layer_offset_lod[layer_idx] + sample_res]));
+        label_vec[offset] = 0;
+        mask_vec[offset] = 1;
+        //        VLOG(3) << "TDM: node id: " << travel_data[start_offset +
+        //        layer_idx]
+        //                << " Res append negitive "
+        //                << output_vec[offset]
+        //                << " Label append negitive "
+        //                << label_vec[offset]
+        //                << " Mask append value "
+        //                << mask_vec[offset];
+        //
+        //        PADDLE_ENFORCE_LE(
+        //            layer_data[layer_offset_lod[layer_idx] + sample_res],
+        //            node_id_max,
+        //            platform::errors::InvalidArgument(
+        //                "Negative node id of OP(fluid.layers.tdm_sampler) at
+        //                layer %ld"
+        //                "expected >= %ld and <= %ld, but got %ld. Please check
+        //                input "
+        //                "tdm tree structure and tdm travel info.",
+        //                layer_idx, node_id_min, node_id_max,
+        //                layer_data[layer_offset_lod[layer_idx] +
+        //                sample_res]));
 
         offset += 1;
       }  // end layer nce
     }    // end one input nce
   }      // end all input nce
 
-  auto *output_data = out_tensor->mutable_data<OutT>(context.GetPlace());
-  auto *label_data = label_tensor->mutable_data<OutT>(context.GetPlace());
-  auto *mask_data = mask_tensor->mutable_data<OutT>(context.GetPlace());
-
-  memcpy(output_data, &output_vec[0], sizeof(OutT) * total_sample_nums);
-  memcpy(label_data, &label_vec[0], sizeof(OutT) * total_sample_nums);
-  memcpy(mask_data, &mask_vec[0], sizeof(OutT) * total_sample_nums);
+  //  memcpy(output_data, &output_vec[0], sizeof(OutT) * total_sample_nums);
+  //  memcpy(label_data, &label_vec[0], sizeof(OutT) * total_sample_nums);
+  //  memcpy(mask_data, &mask_vec[0], sizeof(OutT) * total_sample_nums);
 
   for (size_t layer_index = 0; layer_index < layer_nums; layer_index++) {
     delete sampler_vec[layer_index];

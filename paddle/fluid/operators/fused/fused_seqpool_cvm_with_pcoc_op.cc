@@ -27,18 +27,28 @@ class FusedSeqpoolCVMWithPCOCOp : public framework::OperatorWithKernel {
                       "Outputs(Out) of FusedSeqpoolCVMWithPCOCOp should not be empty.");
 
     auto cvmwithpcoc_dims = ctx->GetInputDim("CVMWithPCOC");
+    const int used_cvm_offset = ctx->Attrs().Get<int>("cvm_offset");
+    const int max_cvm_offset = ctx->Attrs().Get<int>("max_cvm_offset");
     PADDLE_ENFORCE_EQ(
         cvmwithpcoc_dims.size(), 2UL,
         platform::errors::InvalidArgument("Input(CVMWithPCOC)'s rank should be 2."));
-    PADDLE_ENFORCE_EQ(cvmwithpcoc_dims[1], 7UL, platform::errors::InvalidArgument(
+    PADDLE_ENFORCE_EQ(cvmwithpcoc_dims[1], used_cvm_offset, platform::errors::InvalidArgument(
                                             "The 2nd dimension of "
-                                            "Input(CVMWithPCOC) should be 7."));
+                                            "Input(CVMWithPCOC) should be equal to used_cvm_offset."));
 
     auto ins_dims = ctx->GetInputsDim("X");
-    const int cvm_offset = ctx->Attrs().Get<int>("cvm_offset");
     const size_t num_inputs = ins_dims.size();
     std::vector<framework::DDim> outs_dims;
     outs_dims.resize(num_inputs);
+
+    // need filter quant_ratio more than zero
+    if (ctx->Attrs().Get<bool>("need_filter")) {
+      const int quant_ratio = ctx->Attrs().Get<int>("quant_ratio");
+      PADDLE_ENFORCE_GT(
+          quant_ratio, 0,
+          platform::errors::InvalidArgument(
+              "Input need filter quant_ratio should be greater than 0"));
+    }
 
     PADDLE_ENFORCE_GT(num_inputs, 0UL,
                       platform::errors::InvalidArgument(
@@ -66,10 +76,11 @@ class FusedSeqpoolCVMWithPCOCOp : public framework::OperatorWithKernel {
       }
       // input lod is not accessible here
       std::vector<int64_t> out_dim;
+      int embed_index_diff = max_cvm_offset - 2 * used_cvm_offset + 6;
       if (ctx->Attrs().Get<bool>("use_cvm")) {
-        out_dim = {-1, dims[rank - 1] + 1};
+        out_dim = {-1, dims[rank - 1] - embed_index_diff};
       } else {
-        out_dim = {-1, dims[rank - 1] - cvm_offset};
+        out_dim = {-1, dims[rank - 1] - max_cvm_offset};
       }
       outs_dims[i] = framework::make_ddim(out_dim);
     }
@@ -92,8 +103,8 @@ class FusedSeqpoolCVMWithPCOCOpMaker : public framework::OpProtoAndCheckerMaker 
              " operator.")
         .AsDuplicable();
     AddInput("CVMWithPCOC",
-             "(Tensor),  a 2-D Tensor with shape [N x 7], where N is the batch "
-             "size, 7 is show, click, show2, click2, pclk, pclk2, pclk3.");
+             "(Tensor),  a 2-D Tensor with shape [N x used_cvm_offset], where N is the batch "
+             "size, used_cvm_offset is show, click, show2, click2, pclk, pclk2, pclk3....");
     AddOutput("Out",
               "(vector<Tensor>) The output of Op does not contain LoD "
               "information.")
@@ -111,7 +122,9 @@ class FusedSeqpoolCVMWithPCOCOpMaker : public framework::OpProtoAndCheckerMaker 
     AddAttr<float>("show_coeff", "(float, default 0.2)").SetDefault(0.2);
     AddAttr<float>("clk_coeff", "(float, default 1)").SetDefault(1);
     AddAttr<float>("threshold", "(float, default 0.96)").SetDefault(0.96);
-    AddAttr<int>("cvm_offset", "(int, default 2)").SetDefault(7);
+    AddAttr<int>("cvm_offset", "(int, default 7)").SetDefault(7);
+    AddAttr<int>("max_cvm_offset", "(int, default 7)").SetDefault(7);
+    AddAttr<int>("quant_ratio", "(int, default 128)").SetDefault(0);
 
     AddComment(R"DOC(
 Fuse multiple pairs of Sequence Pool and CVMWithPCOC Operator.
@@ -128,7 +141,9 @@ class FusedSeqpoolCVMWithPCOCGradOp : public framework::OperatorWithKernel {
     auto og_dims = ctx->GetInputsDim(framework::GradVarName("Out"));
     auto x_dims = ctx->GetInputsDim("X");
     auto cvm_dims = ctx->GetInputDim("CVMWithPCOC");
-    const int cvm_offset = ctx->Attrs().Get<int>("cvm_offset");
+    const int used_cvm_offset = ctx->Attrs().Get<int>("cvm_offset");
+    const int max_cvm_offset = ctx->Attrs().Get<int>("max_cvm_offset");
+    int embed_index_diff = max_cvm_offset - 2 * used_cvm_offset + 6;
 
     PADDLE_ENFORCE_EQ(
         cvm_dims.size(), 2,
@@ -143,7 +158,8 @@ class FusedSeqpoolCVMWithPCOCGradOp : public framework::OperatorWithKernel {
               og_dims[i].size(), og_dims[i]));
       if (ctx->Attrs().Get<bool>("use_cvm")) {
         PADDLE_ENFORCE_EQ(
-            og_dims[i][og_dims[i].size() - 1], x_dims[i][og_dims[i].size() - 1],
+            og_dims[i][og_dims[i].size() - 1],
+            x_dims[i][og_dims[i].size() - 1] - embed_index_diff,
             platform::errors::InvalidArgument(
                 "The dimension mismatch between Input(OUT@GRAD) and "
                 "Input(X). Received Input(OUT@GRAD): input rank %u, "
@@ -153,7 +169,7 @@ class FusedSeqpoolCVMWithPCOCGradOp : public framework::OperatorWithKernel {
       } else {
         PADDLE_ENFORCE_EQ(
             og_dims[i][og_dims[i].size() - 1],
-            x_dims[i][og_dims[i].size() - 1] - cvm_offset,
+            x_dims[i][og_dims[i].size() - 1] - max_cvm_offset,
             platform::errors::InvalidArgument(
                 "The dimension mismatch between Input(OUT@GRAD) and "
                 "Input(X). Received Input(OUT@GRAD): input rank %u, "
