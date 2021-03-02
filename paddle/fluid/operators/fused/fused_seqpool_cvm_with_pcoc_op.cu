@@ -108,7 +108,7 @@ __global__ void FusedSeqpoolWithPCOCKernelQuantFilter(
       if (offset < 2) { // show & click
         val += *(input_values[x] + k * embedding_size + offset);
       } else if (offset >= 2 && offset < max_cvm_offset) { //show2 & clk2 & pclk & pclk2 & pclk3...
-        if (show2 > show2_threshold) {
+        if (show2 >= show2_threshold) {
           val += *(input_values[x] + k * embedding_size + offset);
         }
       } else {
@@ -159,7 +159,6 @@ __global__ void FusedCVMWithPCOCKernelWithCVM(const size_t output_N, T **output_
         *(output_values[x] + y * ouput_embedding_size + offset) =
             log(*(seqpool_output_values[x] + y * input_embedding_size + (offset + 2 - pclk_num)) + 1) -
             log(*(seqpool_output_values[x] + y * input_embedding_size + 1) + 1);
-
       } else {
         *(output_values[x] + y * ouput_embedding_size + offset) =
             log(*(seqpool_output_values[x] + y * input_embedding_size + (offset + 2 - pclk_num)) + 1) -
