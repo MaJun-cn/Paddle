@@ -491,6 +491,7 @@ DEFINE_bool(padbox_dataset_disable_shuffle, false,
 DEFINE_int32(padbox_slotrecord_extend_dim, 0, "paddlebox pcoc extend dim");
 DEFINE_bool(padbox_auc_runner_mode, false, "auc runner mode");
 DEFINE_bool(padbox_dataset_disable_polling, false, "if true ,will disable input file list polling");
+DEFINE_int32(padbox_share_embedding_num, 0, "paddlebox feedvideoq share embedding num");
 
 /**
  * MKLDNN related FLAG

@@ -51,6 +51,7 @@ limitations under the License. */
 
 DECLARE_int32(fix_dayid);
 DECLARE_bool(padbox_auc_runner_mode);
+DECLARE_int32(padbox_share_embedding_num);
 
 namespace paddle {
 namespace framework {
@@ -501,7 +502,10 @@ class BoxWrapper {
         feature_type_ = feature_type;
         pull_embedx_scale_ = pull_embedx_scale;
         // ToDo: feature gpu value param set diffent value
-        if (feature_type_ == static_cast<int>(boxps::FEATURE_PCOC)) {
+        if (feature_type_ == static_cast<int>(boxps::FEATURE_SHARE_EMBEDDING)) {
+          s_instance_->cvm_offset_ = FLAGS_padbox_share_embedding_num + 2;
+          s_instance_->share_embedding_num_ = FLAGS_padbox_share_embedding_num;
+        } else if (feature_type_ == static_cast<int>(boxps::FEATURE_PCOC)) {
           s_instance_->cvm_offset_ = 8;
         } else {
           s_instance_->cvm_offset_ = 3;
@@ -954,6 +958,7 @@ class BoxWrapper {
   static int feature_type_;
   static float pull_embedx_scale_;
   int cvm_offset_ = 3;
+  int share_embedding_num_ = 0;
 
   // Metric Related
   int phase_ = 1;
