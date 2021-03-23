@@ -137,13 +137,24 @@ __global__ void FusedCVMWithPCOCKernelWithCVM(const size_t output_N, T **output_
     int offset = i % ouput_embedding_size;
     int x = key / batch_size;  // slot id
     int y = key % batch_size;  // ins id
-    if (offset == 0) {  // show
-      *(output_values[x] + y * ouput_embedding_size) =
-          log(*(seqpool_output_values[x] + y * input_embedding_size) + 1);
-    } else if (offset == 1) {  // ctr_smoth = log(click) - log(show)
-      *(output_values[x] + y * ouput_embedding_size + offset) =
-          log(*(seqpool_output_values[x] + y * input_embedding_size + 1) + 1) -
-          log(*(seqpool_output_values[x] + y * input_embedding_size) + 1);
+    if (offset == 0) {
+      if (use_infer_cvm) {// show
+        *(output_values[x] + y * ouput_embedding_size) =
+            log(*(seqpool_output_values[x] + y * input_embedding_size) + 1);
+      } else {// show2
+        *(output_values[x] + y * ouput_embedding_size) =
+            log(*(seqpool_output_values[x] + y * input_embedding_size + 2) + 1);
+      }
+    } else if (offset == 1) {
+      if (use_infer_cvm) {// ctr_smoth = log(click) - log(show)
+        *(output_values[x] + y * ouput_embedding_size + offset) =
+            log(*(seqpool_output_values[x] + y * input_embedding_size + 1) + 1) -
+            log(*(seqpool_output_values[x] + y * input_embedding_size) + 1);
+      } else {// ctr_smoth = log(click2) - log(show2)
+        *(output_values[x] + y * ouput_embedding_size + offset) =
+            log(*(seqpool_output_values[x] + y * input_embedding_size + 3) + 1) -
+            log(*(seqpool_output_values[x] + y * input_embedding_size + 2) + 1);
+      }
     } else if (offset < 2 + pclk_num) { // 2:(4-2)/3:(5-2)/4:(6-2) pctr
       if (use_infer_cvm) {
         *(output_values[x] + y * ouput_embedding_size + offset) =
