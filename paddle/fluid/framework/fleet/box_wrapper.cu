@@ -316,8 +316,8 @@ __global__ void PushCopyBaseShareEmbedding(FeaturePushValueGpuType* dest, float*
     }
 
     //for embed_g[SHARE_EMBEDDING_NUM]
-    for (int i =0; i < (cvm_offset-2); ++i) {
-      dest_val.embed_g[i] *= -1. * bs;
+    for (int e_index = 0; e_index < (cvm_offset-2); ++e_index) {
+      dest_val.embed_g[e_index] *= -1. * bs;
     }
   }
 }
